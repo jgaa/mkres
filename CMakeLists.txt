@@ -4,6 +4,7 @@ if (NOT DEFINED MKRES_VERSION)
     set(MKRES_VERSION 0.0.1)
 endif()
 set(MKRES_VERSION_STR \"${MKRES_VERSION}\")
+add_definitions(-DMKRES_VERSION_STR=${MKRES_VERSION_STR})
 
 project(mkres
     DESCRIPTION "A small command line program to embed files as data in C++ headers."
