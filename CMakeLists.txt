@@ -28,7 +28,7 @@ include(GNUInstallDirs)
 
 add_executable(${PROJECT_NAME} src/main.cpp)
 target_link_libraries(${PROJECT_NAME} stdc++fs ${Boost_LIBRARIES} )
-target_compile_features(${PROJECT_NAME} INTERFACE cxx_std_20)
+set_property(TARGET ${PROJECT_NAME} PROPERTY CXX_STANDARD 20)
 
 install(TARGETS ${PROJECT_NAME}
         EXPORT ${PROJECT_NAME}_Targets
