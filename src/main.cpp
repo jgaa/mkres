@@ -35,21 +35,6 @@ struct Config {
     vector<path_t> sources;
 };
 
-template <typename T>
-string gen_keys(const T& input) {
-
-    std::ostringstream out;
-    string_view seperator = "    ";
-
-    for(const auto& [_, key] : input) {
-        out << format(R"({}"{}")", seperator, key);
-        seperator = ",\n    ";
-
-    }
-
-    return out.str();
-}
-
 // Formats one input stream to a span of bytes;
 
 void format_data(ostream& out, range_of<byte> auto& in) {
@@ -104,7 +89,7 @@ public:
         std::span<const std::byte> data;
     }};
 
-    static Data get(std::string_view key) noexcept;
+    static const Data& get(std::string_view key) noexcept;
 }};
 }} // namespace
 
@@ -116,19 +101,19 @@ public:
 /// Start of implementation
 
     impl << format(R"(
+
+#include <algorithm>
 #include "{}"
 
 namespace {} {{
 
 namespace {{
 
-// Index (keys)
-constexpr auto keys = std::to_array<std::string_view>({{
-{}
-}});
-
 // Actual data
-)", hdr_name, ns,  gen_keys(inputs));
+// (In their infinite wisdom, the C++ committee has decided that a container with std::byte cannot
+//  be initialized with an initializer-list of chars or integers - each byte must be individually
+//  constructed.)
+)", hdr_name, ns/*, gen_keys(inputs)*/);
 
 /// =============================================================
 /// Data
@@ -152,13 +137,13 @@ constexpr auto keys = std::to_array<std::string_view>({{
 
     string_view delimiter;
 
-    std::vector<string> data_names;
+    std::vector<std::pair<string_view /* key */, string /* var_name */>> data_names;
 
     // First, make one array for each file.
     // I have not found a simple constexpr construct to put it directly in the data array
 
     size_t count = 0;
-    for (const auto& [data, _] : inputs) {
+    for (const auto& [data, key] : inputs) {
 
         auto name = format("data_{}", ++count);
 
@@ -166,17 +151,18 @@ constexpr auto keys = std::to_array<std::string_view>({{
         formatter(impl, data);
         impl << ");\n";
 
-        data_names.emplace_back(name);
+        data_names.emplace_back(key, name);
     }
 
     impl << format(R"(
-constexpr auto data = std::to_array<{}::Data>({{)", res_name);
+using data_t = std::pair<std::string_view, {}::Data>;
+constexpr auto data = std::to_array<data_t>({{)", res_name);
 
     delimiter = {};
-    // Now, put the data-elements in an array so we can look it up from an index value
-    for(const auto& name : data_names) {
+    // Now, put the data-elements in an array so we can look it up from a key
+    for(const auto& [key, name] : data_names) {
         impl << format(R"({}
-    {{{}}})", delimiter, name);
+    {{"{}", {{{}}}}})", delimiter, key, name);
         delimiter = ", ";
     }
 
@@ -186,11 +172,24 @@ constexpr auto data = std::to_array<{}::Data>({{)", res_name);
 /// Methods
 
 impl << format(R"(
+
 }} // anon namespace
 
-{}::Data {}::get(std::string_view key) noexcept {{
+const {}::Data& {}::get(std::string_view key) noexcept {{
 
-    return {{}};
+    // C++20 dont't have an algorithm to search for a value in a sorted range.
+    const data_t target{{key, {{}}}};
+    const auto range = std::ranges::lower_bound(data, target, [](const auto& left, const auto& right) {{
+        return left.first < right.first;
+    }});
+
+    if (range != data.end() && range->first == key) {{
+        return range->second;
+    }}
+
+    static constexpr data_t empty;
+
+    return empty.second;
 }} // get()
 
 }} // namespace
