@@ -29,6 +29,7 @@ struct Config {
     string res_name = "EmbeddedResource";
     std::string ns = "mkres";
     std::string filter;
+    std::string exclude;
     std::string compression = "none";
 
     path_t destination = "out";
@@ -46,7 +47,8 @@ void format_data(ostream& out, range_of<byte> auto& in) {
 
     for(const auto& b : in) {
         const auto ch = to_integer<uint8_t>(b);
-        out << format("{}std::byte{{0x{:x}}}", seperator, ch);
+        //out << format("{}std::byte{{0x{:x}}}", seperator, ch);
+        out << format("{}b({:x})", seperator, ch);
         seperator = ",";
 
         if (++col > 20) {
@@ -81,12 +83,24 @@ void generate(const Config& config,  const range_of<pair<filesystem::path /* inp
 #include <cstddef>
 #include <span>
 #include <string_view>
+#include <string>
 namespace {} {{
 
 class {} {{
 public:
     struct Data {{
         std::span<const std::byte> data;
+
+        bool empty() const noexcept {{
+            return data.empty();
+        }}
+
+        std::string toString() const {{
+            const char *ptr = reinterpret_cast<const char *>(data.data());
+            std::string str{{ptr, data.size()}};
+            return str;
+        }}
+
     }};
 
     static const Data& get(std::string_view key) noexcept;
@@ -113,6 +127,7 @@ namespace {{
 // (In their infinite wisdom, the C++ committee has decided that a container with std::byte cannot
 //  be initialized with an initializer-list of chars or integers - each byte must be individually
 //  constructed.)
+#define b(ch) std::byte{{0x ## ch}}
 )", hdr_name, ns/*, gen_keys(inputs)*/);
 
 /// =============================================================
@@ -123,12 +138,13 @@ namespace {{
     formatter_t formatter = [](ostream& out, const path_t& path) {
 
         ifstream data_stream(path, ios_base::in | ios_base::binary);
+        data_stream.unsetf(ios_base::skipws);
 
         // compress ?
 
-        auto input_range = ranges::istream_view<uint8_t>{data_stream}
+        auto input_range = ranges::istream_view<char>{data_stream}
                            | ranges::views::transform([](const auto ch) {
-                                 return byte(ch);
+                                 return byte{static_cast<uint8_t>(ch)};
                              });
 
         out << " // " << path << endl;
@@ -155,6 +171,9 @@ namespace {{
     }
 
     impl << format(R"(
+
+#undef b
+
 using data_t = std::pair<std::string_view, {}::Data>;
 constexpr auto data = std::to_array<data_t>({{)", res_name);
 
@@ -204,12 +223,16 @@ public:
 
     Scanner(const Config& conf)
         : conf_{conf} {
-        if (!conf_.filter.empty()) {
-            if (conf_.verbose) {
-                clog << "Applying filter: " << conf.filter << endl;
+
+        auto apply = [&](auto& cfg, auto & var, const auto& name) {
+            if (!cfg.empty()) {
+                clog << "Applying " << name << ": " << cfg << endl;
+                var.emplace(cfg);
             }
-            filter_.emplace(conf_.filter);
-        }
+        };
+
+        apply(conf_.filter, filter_, "filter");
+        apply(conf_.exclude, exclude_, "negative filter (exclude)");
     }
 
     auto scan() {
@@ -262,13 +285,19 @@ private:
         auto full_path = root;
         full_path /= path;
 
-        if (filter_) {
-            if (!regex_match(path.string(), *filter_)) {
-                if (conf_.verbose) {
-                    clog << "- excluding: " << full_path << " (filter)" << endl;
-                }
-                return;
+        const auto filtered = [&](const regex& filter, const auto& path) {
+            if (regex_match(path.string(), filter)) {
+                return true;
             }
+            return false;
+        };
+
+        if ((filter_ && !filtered(*filter_, path))
+            || (exclude_ && filtered(*exclude_, path))) {
+            if (conf_.verbose) {
+                clog << "- excluding: " << full_path << " (filter)" << endl;
+            }
+            return;
         }
 
         if (filesystem::is_regular_file(full_path)) {
@@ -316,6 +345,7 @@ private:
     inputs_t names_;
     named_inputs_t named_inputs_;
     optional<regex> filter_;
+    optional<regex> exclude_;
 };
 
 
@@ -339,6 +369,9 @@ int main(const int argc, const char **argv) {
         ("filter",
          po::value(&config.filter)->default_value(config.filter),
          "Filter the file-names to embed (regex)")
+        ("exclude",
+         po::value(&config.exclude)->default_value(config.exclude),
+         "Exclude the the file-names to embed (regex)")
         ("destination,d",
          po::value(&config.destination)->default_value(config.destination),
          "Destination path/name. '.h' and '.cpp' is added to the destination file names, so just specify the name without extention.")
