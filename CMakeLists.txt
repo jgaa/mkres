@@ -13,8 +13,13 @@ project(mkres
     LANGUAGES CXX)
 set(MKRES_ROOT ${CMAKE_CURRENT_SOURCE_DIR})
 
+option(MKRES_WITH_GZIP "Enable gzip compression" ON)
 option(MKRES_WITH_TESTS "Enable Tests" ON)
 option(MKRES_WITH_EXAMPLES "Enable Examples" ON)
+
+if (MKRES_WITH_GZIP)
+
+endif()
 
 if(NOT DEFINED USE_BOOST_VERSION)
     set(USE_BOOST_VERSION 1.75)
@@ -27,7 +32,15 @@ find_package(Boost ${USE_BOOST_VERSION} REQUIRED COMPONENTS
 include(GNUInstallDirs)
 
 add_executable(${PROJECT_NAME} src/main.cpp)
-target_link_libraries(${PROJECT_NAME} stdc++fs ${Boost_LIBRARIES} )
+
+if (MKRES_WITH_GZIP)
+    find_package(ZLIB REQUIRED)
+    target_include_directories(${PROJECT_NAME} PUBLIC ${ZLIB_INCLUDE_DIRS})
+    set(zlib_libs ${ZLIB_LIBRARIES})
+    add_definitions(-DMKRES_WITH_GZIP=1)
+endif()
+
+target_link_libraries(${PROJECT_NAME} stdc++fs ${Boost_LIBRARIES} ${zlib_libs} )
 set_property(TARGET ${PROJECT_NAME} PROPERTY CXX_STANDARD 20)
 
 install(TARGETS ${PROJECT_NAME}

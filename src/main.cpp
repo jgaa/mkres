@@ -12,6 +12,10 @@
 
 #include <boost/program_options.hpp>
 
+#ifdef MKRES_WITH_GZIP
+#   include<zlib.h>
+#endif
+
 using namespace std;
 using namespace std::string_literals;
 
@@ -21,6 +25,9 @@ using path_t = filesystem::path;
 
 template <class T, class V>
 concept range_of = std::ranges::range<T> && std::is_same_v<V, std::ranges::range_value_t<T>>;
+
+template <class T, class V>
+concept input_range_of = std::ranges::input_range<T> && std::is_same_v<V, std::ranges::range_value_t<T>>;
 
 struct Config {
     bool verbose = false;
@@ -36,9 +43,16 @@ struct Config {
     vector<path_t> sources;
 };
 
+enum class CompressionState {
+    INIT,
+    COMPRESSING,
+    INPUT_FINISHED,
+    COMPRESSION_FINISHED,
+};
+
 // Formats one input stream to a span of bytes;
 
-void format_data(ostream& out, range_of<byte> auto& in) {
+void format_data(ostream& out, input_range_of<byte> auto& in) {
 
     string_view seperator;
     auto col = 0;
@@ -47,8 +61,7 @@ void format_data(ostream& out, range_of<byte> auto& in) {
 
     for(const auto& b : in) {
         const auto ch = to_integer<uint8_t>(b);
-        //out << format("{}std::byte{{0x{:x}}}", seperator, ch);
-        out << format("{}b({:x})", seperator, ch);
+        out << format("{}b({:0>2x})", seperator, ch);
         seperator = ",";
 
         if (++col > 20) {
@@ -60,7 +73,224 @@ void format_data(ostream& out, range_of<byte> auto& in) {
     out << "}";
 }
 
+template <std::ranges::input_range R, size_t bufferLen = 1024 * 8>
+class compress
+{
 
+public:
+    using value_type = std::remove_cvref_t<std::ranges::range_value_t<R>>;
+
+    // Forward iterator
+    class Iterator {
+    public:
+        using value_type = compress::value_type;
+        using difference_type = std::ptrdiff_t;
+        using iterator_category = input_iterator_tag;
+        //using pointer = const value_type *;
+        using reference = value_type;
+
+        Iterator() = default;
+
+        Iterator(compress& owner, bool end)
+            : owner_{&owner}, end_{end}
+        {
+            advance();
+        }
+
+        Iterator(const compress& owner, bool end)
+            : end_{true}
+        {
+            assert(end);
+        }
+
+        Iterator(const Iterator& it) {
+            assert(false); // dont use
+        };
+
+        Iterator(Iterator&& it) noexcept
+            : owner_{it.owner_}, end_{it.end}
+        {
+            it.end_ = true; // May cause subtle bugs if the moved from object is used...
+        }
+
+        // NB: std::ranges::end() will not compile without this.
+        //     I have not seen this documented anywhere!
+        Iterator& operator = (const Iterator& it) noexcept {
+            assert(it.end_); // dont use active iterators
+        }
+
+        Iterator& operator = (Iterator&& it) noexcept {
+            owner_ = it.owner_;
+            end_ = it.end_;
+            it.end_ = true;
+            return *this;
+        }
+
+        bool operator == (const Iterator& it) const noexcept {
+            return end_ && it.end_;
+        }
+
+        value_type& operator * () const {
+            throwIfEnd();
+            assert(owner_);
+            return *owner_->out_it_;
+        }
+
+        // ++T
+        Iterator& operator++ () {
+            advance();
+            return *this;
+        }
+
+        // T++
+        Iterator& operator++ (int) {
+            advance();
+            return *this;
+        }
+
+    private:
+
+        void throwIfEnd() const {
+            assert(!end_);
+            if (end_) {
+                throw runtime_error{"Cannot dereference iterator == end()"};
+            }
+        }
+
+        void advance() {
+            assert(owner_);
+            if (owner_->out_it_ == owner_->out_end_) {
+                if (!owner_->compressSome()) {
+                    end_ = true;
+                    return;
+                }
+                assert(owner_->out_it_ == owner_->out_buffer_.begin());
+                return; // Don't adcance the iterator. It points at the start now.
+            }
+
+            if (owner_->out_it_ != owner_->out_end_) [[likely]] {
+                owner_->out_it_++;
+                return;
+            }
+
+            throw runtime_error{"compress::advance(): Past end()!"};
+        }
+
+        compress *owner_ = {};
+        bool end_ = true;
+    };
+
+    compress() = default;
+
+    explicit compress(R input)
+        : input_{input}, it_{std::begin(input_)}
+    {
+        // https://itecnote.com/tecnote/setup-zlib-to-generate-gzipped-data/
+        static constexpr int windowsBits = 15;
+        static constexpr int GZIP_ENCODING = 16;
+
+        if (deflateInit2(&strm_, Z_BEST_COMPRESSION, Z_DEFLATED,
+                        windowsBits | GZIP_ENCODING,
+                        9,
+                        Z_DEFAULT_STRATEGY) != Z_OK) {
+            throw runtime_error{"deflateInit2() failed"};
+        }
+    }
+
+    auto begin() {
+        return Iterator{*this, false};
+    }
+
+    auto end() {
+        return Iterator{};
+    }
+
+private:
+    void fillInputBufferFromInputRange() {
+        auto out = in_buffer_.begin();
+        bytes_in_input_ = 0;
+        for(; it_ != input_.end(); ++it_, ++bytes_in_input_) {
+            *out = *it_;
+            ++it_;
+            if (++out == in_buffer_.end()) {
+                break;
+            }
+        }
+
+        strm_.next_in = reinterpret_cast<uint8_t *>(in_buffer_.data());
+        strm_.avail_in = bytes_in_input_;
+    }
+
+    void prepareOutputBuffer() {
+        strm_.next_out = reinterpret_cast<uint8_t *>(out_buffer_.data());
+        strm_.avail_out = out_buffer_.size();
+        out_it_ = out_buffer_.begin();
+    }
+
+    bool compressSome() {
+        if (state_ == CompressionState::COMPRESSION_FINISHED) {
+            return false; // Nothing to do
+        }
+
+        if (state_ == CompressionState::INIT) {
+            state_ = CompressionState::COMPRESSING;
+        }
+
+        if (state_ == CompressionState::COMPRESSING) {
+            prepareOutputBuffer();
+        }
+
+        // Feed the compressor with input until we don't have any more.
+        // Return when the output buffer is full or when we are done.
+        while(true) {
+            if (strm_.avail_in == 0 && state_ ==  CompressionState::COMPRESSING) {
+                fillInputBufferFromInputRange();
+            }
+
+            auto op = Z_NO_FLUSH;
+            if (state_ == CompressionState::INPUT_FINISHED) {
+                op = Z_FINISH;
+            }
+
+            auto result = deflate(&strm_, op);
+
+            if (result == Z_STREAM_END) {
+                state_ = CompressionState::COMPRESSION_FINISHED;
+                const auto bytes_in_buffer = out_buffer_.size() - strm_.avail_out;
+                out_end_ = out_buffer_.begin() + bytes_in_buffer;
+                return out_end_ != out_buffer_.begin();
+            }
+
+            if (result != Z_OK) {
+                throw runtime_error{"deflate() failed"};
+            }
+
+            if (strm_.avail_out == 0) {
+                out_end_ = out_buffer_.end(); // Assume the entire buffer was used.
+                return true;
+            }
+
+            const bool last_batch = it_ == input_.end();
+            if (state_ == CompressionState::COMPRESSING && strm_.avail_in == 0) {
+                if (last_batch) {
+                    state_ = CompressionState::INPUT_FINISHED;
+                } else {
+                    fillInputBufferFromInputRange();
+                }
+            }
+        }
+    }
+
+    R input_;
+    std::ranges::iterator_t<R> it_;
+    z_stream strm_ = {};
+    std::array<std::byte, bufferLen> in_buffer_;
+    std::array<std::byte, bufferLen> out_buffer_;
+    decltype(out_buffer_.begin()) out_it_ = out_buffer_.end();
+    decltype(out_buffer_.end()) out_end_ = out_buffer_.end();
+    size_t bytes_in_input_ = 0;
+    CompressionState state_ = CompressionState::INIT;
+};
 
 void generate(const Config& config,  const range_of<pair<filesystem::path /* input path */, string  /* name/key */>> auto& inputs) {
     const auto ns = config.ns;
@@ -95,19 +325,23 @@ public:
             return data.empty();
         }}
 
-        std::string toString() const {{
-            const char *ptr = reinterpret_cast<const char *>(data.data());
-            std::string str{{ptr, data.size()}};
-            return str;
-        }}
-
+        // Gets the entire buffer. Decompresses the data if it's compressed.
+        std::string toString() const;
     }};
 
     static const Data& get(std::string_view key) noexcept;
+
+    static constexpr bool isCompressed() noexcept {{
+        return {};
+    }}
+
+    static constexpr std::string_view compression() noexcept {{
+        return "{}";
+    }}
 }};
 }} // namespace
 
-)", MKRES_VERSION_STR, ns, res_name);
+)", MKRES_VERSION_STR, ns, res_name, compressed, config.compression);
 
     // Generate the implemetation file
 
@@ -132,10 +366,11 @@ namespace {{
 
 /// =============================================================
 /// Data
+///
 
     using formatter_t = function<void(ostream&, path_t)>;
 
-    formatter_t formatter = [](ostream& out, const path_t& path) {
+    formatter_t formatter = [&config](ostream& out, const path_t& path) {
 
         ifstream data_stream(path, ios_base::in | ios_base::binary);
         data_stream.unsetf(ios_base::skipws);
@@ -148,6 +383,12 @@ namespace {{
                              });
 
         out << " // " << path << endl;
+
+        if (config.compression == "gzip") {
+            auto compressor = compress(input_range);
+            format_data(out, compressor);
+        }
+
         format_data(out, input_range);
     };
 
@@ -165,7 +406,7 @@ namespace {{
 
         impl << format(R"(constexpr auto {} = std::to_array<const std::byte>()", name);
         formatter(impl, data);
-        impl << ");\n";
+        impl << ");" << endl;
 
         data_names.emplace_back(key, name);
     }
@@ -211,8 +452,20 @@ const {}::Data& {}::get(std::string_view key) noexcept {{
     return empty.second;
 }} // get()
 
+
+std::string {}::Data::toString() const {{
+    if (isCompressed()) {{
+        return "compressed data...";
+    }}
+
+    const char *ptr = reinterpret_cast<const char *>(data.data());
+    std::string str{{ptr, data.size()}};
+    return str;
+}}
+
+
 }} // namespace
-)", res_name, res_name);
+)", res_name, res_name, res_name);
 
 }
 
