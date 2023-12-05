@@ -7,10 +7,16 @@
 #include <functional>
 #include <span>
 #include <cstdint>
+#include <format>
 
+#ifndef ZLIB_CONST
+#   define ZLIB_CONST
+#endif
 #include<zlib.h>
 
 // Generic transformig view template for
+
+namespace jgaa::ranges::zlib {
 
 template <class T>
 concept input_range_of_bytes =
@@ -33,12 +39,41 @@ concept input_buffer_range_of_bytes = input_range_of_bytes<R>
                                       && std::ranges::contiguous_range<R>
     ;
 
+/*! Uncompress the entire compressed data from one input buffer to one output buffer of sufficcient size
+ *
+ *  Returns a span over the uncompressed data.
+ */
+
+template <input_buffer_range_of_bytes In, output_buffer_range_of_bytes Out>
+auto gz_uncompress_all(const In& in, Out& out) {
+
+    z_stream strm{};
+
+    const auto wsize = MAX_WBITS | 16;
+
+    if (inflateInit2(&strm, wsize) != Z_OK) {
+        throw std::runtime_error{"Failed to initialize decompression"};
+    }
+
+    strm.avail_in = in.size();
+    strm.next_in = reinterpret_cast<const Bytef *>(in.data());
+
+    strm.avail_out = out.size();
+    strm.next_out = reinterpret_cast<Bytef *>(out.data());
+
+    const auto result = inflate(&strm, Z_FINISH);
+    if (result != Z_STREAM_END) {
+        throw std::runtime_error{std::format("Failed to decompress. Error {}", result)};
+    }
+
+    return std::span{out.data(), strm.total_out};
+}
 
 
 // The compressor works with buffers of a known size, not iterators.
 // This because zlib require C buffers for input and output.
 template <typename T, typename Out = std::span<T>,
-         std::invocable feedT = std::function<Out()>>
+         std::invocable feedT = std::function<std::span<const T>()>>
 class GzipCompressor {
     enum class CompressionState {
         COMPRESSING,
@@ -68,9 +103,7 @@ public:
             return {}; // Nothing to do
         }
 
-        if (state_ == CompressionState::COMPRESSING) {
-            prepareOutput();
-        }
+        prepareOutput();
 
         // Feed the compressor with input until we don't have any more.
         // Return when the output buffer is full or when we are done.
@@ -82,17 +115,19 @@ public:
             const auto op = (state_ == CompressionState::INPUT_FINISHED)
                                 ? Z_FINISH : Z_NO_FLUSH;
 
+            const auto stream_backup = strm_;
+
+            assert(strm_.avail_out != 0);
             const auto result = deflate(&strm_, op);
 
             if (result == Z_STREAM_END) {
                 state_ = CompressionState::COMPRESSION_FINISHED;
                 const auto bytes = out_.size() - strm_.avail_out;
-                assert(bytes == strm_.total_out);
                 return out_.subspan(0, bytes);
             }
 
             if (result != Z_OK) {
-                throw std::runtime_error{"deflate() failed"};
+                throw std::runtime_error{std::format("deflate() failed with status: {}", result)};
             }
 
             if (strm_.avail_out == 0) {
@@ -111,14 +146,14 @@ public:
 
 private:
     void prepareOutput() {
-        strm_.next_out = reinterpret_cast<uint8_t *>(out_.data());
+        strm_.next_out = reinterpret_cast<Bytef *>(out_.data());
         strm_.avail_out = out_.size();
     }
 
     void prepareInput() {
         assert(state_ == CompressionState::COMPRESSING);
         in_ = feed_();
-        strm_.next_in = reinterpret_cast<uint8_t *>(in_.data());
+        strm_.next_in = reinterpret_cast<const Bytef *>(in_.data());
         strm_.avail_in = in_.size();
 
         if (in_.empty()) {
@@ -153,7 +188,8 @@ public:
         Iterator(Transformer& parent)
             : end_{false}, parent_{&parent}
         {
-            advance();
+            // Get the initial data and set the actual input iterator
+            parent_->fetchFromProcessor();
         }
 
         Iterator(const Iterator& it) {
@@ -255,16 +291,21 @@ public:
     }
 
 private:
-    // Move the iterator, over the data that is ready, forward.
+    // Move the iterator one step forward.
+    // Return true if advance() could be called again (not end()).
     bool advance() {
-        if (ready_it_ != ready_end_) {
-            ++ready_it_;
-        } else {
-            auto ready_range = processor_.next();
-            ready_it_ = ready_range.begin();
-            ready_end_ = ready_range.end();
+        assert(ready_it_ != ready_end_);
+        if (++ready_it_ != ready_end_) {
+            return true;
         }
 
+        return fetchFromProcessor();
+    }
+
+    bool fetchFromProcessor() {
+        auto ready_range = processor_.next();
+        ready_it_ = ready_range.begin();
+        ready_end_ = ready_range.end();
         return ready_it_ != ready_end_;
     }
 
@@ -273,7 +314,7 @@ private:
         return *ready_it_;
     }
 
-    std::span<T> feed() {
+    std::span<const T> feed() {
 
         auto to = unprocessed_buffer_.begin();
         const auto to_end = unprocessed_buffer_.end();
@@ -285,7 +326,6 @@ private:
 
         return {unprocessed_buffer_.data(), count};
     }
-
 
     bool used_ = false;
     R input_;
@@ -303,17 +343,7 @@ public:
     using rbuf_t = decltype(ready_buffer_);
 };
 
-template <input_range_of_bytes R, typename T=std::ranges::range_value_t<R>,
-         size_t bufferLen = 1024 * 4>
-using ZipRangeProcessor = Transformer<T, R, bufferLen, GzipCompressor<T>>;
+template <input_range_of_bytes R, size_t bufferLen = 1024 * 4, typename T=std::ranges::range_value_t<R>>
+using gz_compressor = Transformer<T, R, bufferLen, GzipCompressor<T>>;
 
-void compress() {
-    std::string_view input = "teste";
-
-    std::string teste;
-
-    auto range = ZipRangeProcessor<decltype(input)>{input};
-
-    std::ranges::copy(range, std::back_inserter(teste));
-
-}
+} // namespace
