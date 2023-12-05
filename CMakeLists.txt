@@ -1,8 +1,11 @@
 cmake_minimum_required(VERSION 3.24)
 
+set(MKRES_ROOT ${CMAKE_CURRENT_SOURCE_DIR})
+
 if (NOT DEFINED MKRES_VERSION)
     set(MKRES_VERSION 0.0.1)
 endif()
+
 set(MKRES_VERSION_STR \"${MKRES_VERSION}\")
 add_definitions(-DMKRES_VERSION_STR=${MKRES_VERSION_STR})
 
@@ -17,8 +20,8 @@ option(MKRES_WITH_GZIP "Enable gzip compression" ON)
 option(MKRES_WITH_TESTS "Enable Tests" ON)
 option(MKRES_WITH_EXAMPLES "Enable Examples" ON)
 
-if (MKRES_WITH_GZIP)
-
+if (MKRES_WITH_TESTS)
+    find_package(GTest REQUIRED)
 endif()
 
 if(NOT DEFINED USE_BOOST_VERSION)
@@ -31,7 +34,7 @@ find_package(Boost ${USE_BOOST_VERSION} REQUIRED COMPONENTS
 
 include(GNUInstallDirs)
 
-add_executable(${PROJECT_NAME} src/main.cpp)
+add_executable(${PROJECT_NAME} src/main.cpp src/gzipranges.hpp)
 
 if (MKRES_WITH_GZIP)
     find_package(ZLIB REQUIRED)
@@ -49,3 +52,7 @@ install(TARGETS ${PROJECT_NAME}
         LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
+if (MKRES_WITH_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()

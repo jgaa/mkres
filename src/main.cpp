@@ -10,6 +10,8 @@
 #include <format>
 #include <regex>
 
+#include "gzipranges.hpp"
+
 #include <boost/program_options.hpp>
 
 #ifdef MKRES_WITH_GZIP
@@ -682,4 +684,6 @@ int main(const int argc, const char **argv) {
     } catch(const exception& ex) {
         cerr << "Failed with exception! Message:  " << ex.what() << endl;
     }
+
+    compress();
 }
