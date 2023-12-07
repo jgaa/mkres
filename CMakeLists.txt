@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.24)
 set(MKRES_ROOT ${CMAKE_CURRENT_SOURCE_DIR})
 
 if (NOT DEFINED MKRES_VERSION)
-    set(MKRES_VERSION 0.0.1)
+    set(MKRES_VERSION 0.1.0)
 endif()
 
 set(MKRES_VERSION_STR \"${MKRES_VERSION}\")

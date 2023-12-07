@@ -71,8 +71,8 @@ void format_data(ostream& out, input_range_of<byte> auto& in) {
 void generate(const Config& config,
               const range_of<pair<filesystem::path /* input path */, string  /* name/key */>> auto& inputs) {
     const auto ns = config.ns;
-    const auto hdr_name = config.destination.string() + ".h";
-    const auto impl_name = config.destination.string() + ".cpp";
+    const auto hdr_name = config.destination.string() + ".h~";
+    const auto impl_name = config.destination.string() + ".cpp~";
     const auto res_name = config.res_name;
     const bool is_compressed = config.compression == "gzip";
     const auto compressed = is_compressed ? "true" : "false";
@@ -306,6 +306,12 @@ std::string {}::Data::toString() const {{
 }
 } // namespace
 )";
+
+    impl.close();
+    hdr.close();
+
+    std::filesystem::rename(hdr_name, hdr_name.substr(0, hdr_name.size() -1));
+    std::filesystem::rename(impl_name, impl_name.substr(0, impl_name.size() -1));
 }
 
 class Scanner {
