@@ -341,7 +341,7 @@ public:
                 if (conf_.recurse) {
                     scanDir(path.parent_path(), path.filename());
                 } else {
-                    throw runtime_error{format(R"(The path "{}" is a directory! Use "--recursive" option to scan directories.)", path.string())};
+                    throw runtime_error{format(R"(The path "{}" is a directory! Use "--recurse" option to scan directories.)", path.string())};
                 }
             } else {
                 add(path.parent_path(), path.filename());
