@@ -45,6 +45,7 @@ interface (static C++ class) to lookup the content by name.
 - C++20 compatible compiler. Tested with g++-13 and clang++-17.
 - zlib if compression is enabled (CMake option).
 - Boost library (program_options). The generated code does not require libboost.
+- Google Test if you compile with testing enabled (CMake option)
 
 ## Usage:
 ```
