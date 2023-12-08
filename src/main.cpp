@@ -528,5 +528,6 @@ int main(const int argc, const char **argv) {
         generate(config, inputs);
     } catch(const exception& ex) {
         cerr << "Failed with exception! Message:  " << ex.what() << endl;
+        return 1;
     }
 }
