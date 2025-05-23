@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.24)
 set(MKRES_ROOT ${CMAKE_CURRENT_SOURCE_DIR})
 
 if (NOT DEFINED MKRES_VERSION)
-    set(MKRES_VERSION 0.1.0)
+    set(MKRES_VERSION 0.2.0)
 endif()
 
 set(MKRES_VERSION_STR \"${MKRES_VERSION}\")
@@ -28,7 +28,7 @@ if(NOT DEFINED USE_BOOST_VERSION)
     set(USE_BOOST_VERSION 1.75)
 endif()
 
-find_package(Boost ${USE_BOOST_VERSION} REQUIRED COMPONENTS
+find_package(Boost ${USE_BOOST_VERSION} REQUIRED NO_MODULE COMPONENTS
     program_options
     )
 

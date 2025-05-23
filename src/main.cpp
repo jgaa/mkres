@@ -295,8 +295,7 @@ std::string {}::Data::toString() const {{
     if (isCompressed()) {
         std::string out_buffer;
         out_buffer.resize(origLen);
-        std::span<const uint8_t> out{reinterpret_cast<uint8_t *>(out_buffer.data()), out_buffer.size()};
-        gz_uncompress_all(data, out);
+        gz_uncompress_all(data, out_buffer);
         return out_buffer;
     }
 )";
