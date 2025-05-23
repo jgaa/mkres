@@ -47,7 +47,7 @@ struct Config {
 
 // Formats one input stream to a span of bytes;
 
-void format_data(ostream& out, input_range_of<byte> auto& in) {
+void format_data(ostream& out, input_range_of<uint8_t> auto& in) {
 
     string_view seperator;
     auto col = 0;
@@ -55,11 +55,10 @@ void format_data(ostream& out, input_range_of<byte> auto& in) {
     out << "{";
 
     for(const auto& b : in) {
-        const auto ch = to_integer<uint8_t>(b);
-        out << format("{}b({:0>2x})", seperator, ch);
+        out << format("{}0x{:0>2x}", seperator, b);
         seperator = ",";
 
-        if (++col > 20) {
+        if (++col > 40) {
             out << endl;
             col = 0;
         }
@@ -79,6 +78,8 @@ void generate(const Config& config,
     const bool is_compressed = config.compression == "gzip";
     const auto compressed = is_compressed ? "true" : "false";
 
+    clog << "Generating tmp: " << impl_name_tmp << " and " << hdr_name_tmp << " ..." << endl;
+
     ofstream impl(impl_name_tmp);
     ofstream hdr(hdr_name_tmp);
     //int count = 0;
@@ -92,6 +93,7 @@ void generate(const Config& config,
 #pragma once
 #include <cstddef>
 #include <span>
+#include <cstdint>
 #include <string_view>
 #include <string>
 namespace {} {{
@@ -99,7 +101,7 @@ namespace {} {{
 class {} {{
 public:
     struct Data {{
-        const std::span<const std::byte> data;
+        const std::span<const uint8_t> data;
         const size_t origLen{{}};
 
         bool empty() const noexcept {{
@@ -189,10 +191,8 @@ auto gz_uncompress_all(const In& in, Out& out) {
     impl << R"(
 
 // Actual data
-// (In their infinite wisdom, the C++ committee has decided that a container with std::byte cannot
-//  be initialized with an initializer-list of chars or integers - each byte must be individually
-//  constructed.)
-#define b(ch) std::byte{0x ## ch}
+//#define b(ch) uint8_t{0x ## ch}
+#define b(ch) 0x ## ch
 
 )";
 
@@ -211,7 +211,7 @@ auto gz_uncompress_all(const In& in, Out& out) {
 
         auto input_range = ranges::istream_view<char>{data_stream}
                            | ranges::views::transform([](const auto ch) {
-                                 return byte{static_cast<uint8_t>(ch)};
+                                 return static_cast<uint8_t>(ch);
                              });
 
         out << " // " << path << endl;
@@ -238,7 +238,7 @@ auto gz_uncompress_all(const In& in, Out& out) {
 
         auto name = format("data_{}", ++count);
 
-        impl << format(R"(constexpr auto {} = std::to_array<const std::byte>()", name);
+        impl << format(R"(constexpr auto {} = std::to_array<uint8_t>()", name);
         formatter(impl, data_path);
         impl << ");" << endl;
 
@@ -295,7 +295,7 @@ std::string {}::Data::toString() const {{
     if (isCompressed()) {
         std::string out_buffer;
         out_buffer.resize(origLen);
-        std::span<std::byte> out{reinterpret_cast<std::byte *>(out_buffer.data()), out_buffer.size()};
+        std::span<const uint8_t> out{reinterpret_cast<uint8_t *>(out_buffer.data()), out_buffer.size()};
         gz_uncompress_all(data, out);
         return out_buffer;
     }
@@ -312,8 +312,14 @@ std::string {}::Data::toString() const {{
     impl.close();
     hdr.close();
 
+
+    clog << "Renaming " << hdr_name_tmp << " to " << hdr_name << endl;
     std::filesystem::rename(hdr_name_tmp, hdr_name);
+
+    clog << "Renaming " << impl_name_tmp << " to " << impl_name << endl;
     std::filesystem::rename(impl_name_tmp, impl_name);
+
+    clog << "Successfully renamed the files" << endl;
 }
 
 class Scanner {
